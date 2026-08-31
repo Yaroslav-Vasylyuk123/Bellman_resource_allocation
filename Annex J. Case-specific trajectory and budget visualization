@@ -1,0 +1,62 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def sat01(z):
+    """Clamps value between 0.0 and 1.0."""
+    return 0.0 if z < 0 else 1.0 if z > 1 else z
+
+# 1. Robust Data Loading
+try:
+    # Using 'with' or standard read; ensure file exists in local directory
+    dfA_out = pd.read_excel("bellman_outputs_base2048.xlsx", sheet_name="A", engine="openpyxl")
+except FileNotFoundError:
+    print("Error: 'bellman_outputs_base2048.xlsx' not found. Please upload the file.")
+    raise
+
+# 2. Dynamic Configuration
+row_index = 888  # Centralized control: change this to view different cases
+row = dfA_out.iloc[row_index]
+u = [row[f"u{k}_bnEUR"] for k in range(1, 6)]
+
+a, b = row["a"], row["b"]
+A = 1 - b
+x = [0.6]  # Starting readiness x0
+
+# 3. Trajectory Calculation
+for uk in u:
+    x.append(sat01(A * x[-1] + a * uk))
+
+# 4. Improved Visualization
+plt.figure(figsize=(12, 5))
+
+# Readiness Plot
+plt.subplot(1, 2, 1)
+plt.plot(range(0, 6), x, marker="o", color="royalblue", linewidth=2)
+plt.axhline(y=1.0, color='r', linestyle='--', alpha=0.3) # Target line
+plt.title(f"Readiness Trajectory (Row {row_index})")
+plt.xlabel("Year Index (t)")
+plt.ylabel("Readiness Level (x)")
+plt.grid(True, alpha=0.3)
+
+# Budget Plot
+plt.subplot(1, 2, 2)
+plt.bar(range(1, 6), u, color="seagreen", alpha=0.8)
+plt.title("Annual Budgets (u1..u5)")
+plt.xlabel("Year")
+plt.ylabel("bn EUR")
+plt.grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# 5. Dynamic Data Summary
+print("-" * 30)
+print(f"CASE SUMMARY: Row {row_index}")
+print("-" * 30)
+print(f"Parameters:  a = {a:.4f} | b = {b:.4f}")
+print(f"Weights:     qE = {row['qE']} | qTE = {row['qTE']}")
+print(f"Final State: x5 (Calculated) = {x[-1]:.4f}")
+print(f"Reference:   x5 (From DF)     = {row['x6']:.4f}") # Changed label from x6 to x5
+print(f"Total Spend: {row['u_total_bnEUR']:.2f} bn EUR")
+print("-" * 30)
