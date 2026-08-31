@@ -1,0 +1,21 @@
+Problem
+Defence institutions must allocate limited resources across multiple years while sustaining combat readiness. Traditional static budgeting based on human intuition or qualitative approaches cannot capture the temporal dependency of readiness, nor assess the cost of delayed investment or the risk of underperformance across the planning horizon.
+
+Aim
+This research evaluates whether the discrete, finite-horizon Bellman equation, implemented via dynamic programming, can serve as a computationally feasible and analytically rigorous decision-support tool for multi-year defence resource allocation.
+
+Method
+The study formulates a two-dimensional dynamic programming model with readiness and remaining budget as state variables and annual budget allocations as controls. Using synthetically generated 2048 Sobol-QMC samples, it performs 12,288 Bellman optimizations in Python on public cloud infrastructure (Google Colab, free-of-charge tier). A feasibility assessment (runtime and RAM), global sensitivity analysis (Sobol indices), and trajectory visualization are conducted.
+
+Findings
+The dynamic programming solver completed all experiments in 45,9 minutes and used 0,24 GB of RAM, confirming feasibility for a 2D model on standard hardware. Sensitivity analysis shows that the terminal penalty weight q_(T,EUR) and investment efficiency a dominate readiness outcomes, while depreciation b and annual penalties q_EUR have minor impacts within the chosen ranges for this model. The model identifies optimal investment trajectories depending on parameter envelopes. Computational scaling analysis indicates that feasibility on publicly available cloud infrastructure or personal PCs breaks beyond five state dimensions (d=5) due to the ‘RAM Wall’, aligning with theoretical expectations of O(n^d) growth.
+
+Value for Defence Planning
+The model provides:
+	Quantitative Decision Support: a transparent and reproducible tool that moves beyond qualitative intuition to evidence-based resource allocation.
+	Long-term Strategic Sustainability: a framework to quantify "Readiness Debt" and evaluate the intertemporal trade-offs between current military readiness and future modernization.
+	Practical Scalability for Capability and Capacity Planning: a versatile multi-domain approach that can be adapted to various issues, from military acquisition and human capital planning to force structure development.
+
+Conclusion
+Tabular dynamic programming is feasible for low-dimensional readiness models (up to five dimensions) and can support evidence-based multi-year defence planning. Adoption requires institutional readiness, calibrated data, and integration with long-term capability and capacity planning processes.
+This Research Paper provides an original application of Dynamic Programming to multi‑year defence readiness planning, integrating computational feasibility testing and global sensitivity analysis into a single reproducible model.
