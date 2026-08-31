@@ -1,0 +1,61 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+dfA_out = pd.read_excel("bellman_outputs_base2048.xlsx", sheet_name="A", engine="openpyxl")
+
+# Histogram of x5 (actually x6 from data)
+plt.figure(figsize=(8,4))
+plt.hist(dfA_out["x6"], bins=30) # Accessing 'x6' column
+plt.title("Distribution of terminal readiness x5 (Sheet A)") # Labeling as 'x5'
+plt.xlabel("x5") # Labeling as 'x5'
+plt.ylabel("count")
+plt.show()
+
+# Scatter: x5 vs a (should show strong relationship if a is important)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["a"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs a (Readiness appreciation rate)") # Labeling as 'x5'
+plt.xlabel("a")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
+
+# Scatter: x5 vs b (should show strong relationship if b is important)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["b"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs b (Readiness depreciation rates)") # Labeling as 'x5'
+plt.xlabel("b")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
+
+# Scatter: x5 vs qE (should show strong relationship if qE is important)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["qE"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs q_EUR") # Labeling as 'x5'
+plt.xlabel("qE")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
+
+# Scatter: x5 vs qTE (should show strong relationship if qTE is important)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["qTE"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs q_T,EUR") # Labeling as 'x5'
+plt.xlabel("qTE")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
+
+# Scatter: x5 vs u_total (check if more spend always increases x5)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["u_total_bnEUR"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs total spending (bn EUR)") # Labeling as 'x5'
+plt.xlabel("u_total (bn EUR)")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
+
+# Scatter: x5 vs V1_bnEUR (should show strong relationship if V1_bnEUR is important)
+plt.figure(figsize=(6,4))
+plt.scatter(dfA_out["V1_bnEUR"], dfA_out["x6"], s=10, alpha=0.6) # Accessing 'x6' column
+plt.title("x5 vs V1_bnEUR") # Labeling as 'x5'
+plt.xlabel("V1_bnEUR")
+plt.ylabel("x5") # Labeling as 'x5'
+plt.show()
