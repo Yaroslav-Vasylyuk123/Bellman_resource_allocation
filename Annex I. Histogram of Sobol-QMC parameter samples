@@ -1,0 +1,14 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+dfA = pd.read_excel(“sobol_qmc_base2048_samples.xlsx”, sheet_name=”A”, engine=”openpyxl”)
+dfB = pd.read_excel(“sobol_qmc_base2048_samples.xlsx”, sheet_name=”B”, engine=”openpyxl”)
+# Histograms of sampled parameters
+fig, axes = plt.subplots(2, 2, figsize=(10, 6))
+for ax, col in zip(axes.ravel(), [“a”, “b”, “qE”, “qTE”]):
+    ax.hist(dfA[col], bins=30, alpha=0.7, label=”A”)
+    ax.hist(dfB[col], bins=30, alpha=0.5, label=”B”)
+    ax.set_title(f”Distribution of {col}”)
+    ax.legend()
+plt.tight_layout()
+plt.show()
