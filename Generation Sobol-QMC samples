@@ -1,0 +1,148 @@
+!pip -q install psutil
+import os, time, threading
+import psutil
+import resource
+import numpy as np
+import pandas as pd
+from scipy.stats import qmc
+
+# ---- unit helpers (Full Reporting Suite) ----
+def bytes_to_GB(b):   return b / 1e9
+def bytes_to_TB(b):   return b / 1e12
+def bytes_to_GiB(b):  return b / (1024**3)
+def bytes_to_TiB(b):  return b / (1024**4)
+
+proc = psutil.Process(os.getpid())
+
+def rss_bytes():
+    return proc.memory_info().rss
+
+# --- start metrics ---
+t0 = time.perf_counter()
+cpu0 = proc.cpu_times()
+rss0_b = rss_bytes()
+
+peak_rss_b = rss0_b
+running = True
+
+def monitor_peak():
+    global peak_rss_b
+    while running:
+        b = rss_bytes()
+        if b > peak_rss_b:
+            peak_rss_b = b
+        time.sleep(0.05)  # 50 ms sampling
+
+thread = threading.Thread(target=monitor_peak, daemon=True)
+thread.start()
+
+# =================================================================
+# SCRIPT 1 — Generate Sobol-QMC samples (Base n=2048)
+# =================================================================
+"""
+WHAT THIS SCRIPT DOES (FAST + REPRODUCIBLE):
+1) Uses SciPy's Sobol quasi-random generator to draw n = 2^m points.
+2) Creates TWO independent base matrices A and B (each n×d) because 
+   variance-based Sobol sensitivity needs both A and B.
+3) Scales samples from [0,1] to the requested parameter ranges.
+4) Writes an Excel file with sheets:
+      - 'A' (2048 rows)
+      - 'B' (2048 rows)
+      - 'A_and_B' (4096 rows total, includes a 'matrix' column)
+
+WHY TWO MATRICES?
+- First-order Sobol indices require model evaluations at A, B, and A 
+  with one column swapped from B.
+- If you only store one set of 1024 samples, you cannot compute 
+  true Sobol indices.
+
+USAGE (Google Colab):
+- Run this script in a cell and then download the produced .xlsx.
+"""
+
+# 1) User settings
+m = 11  # 2^11 = 2048 rows per matrix
+n = 2 ** m
+
+param_ranges = {
+    'a':   (0.10, 1.20),
+    'b':   (0.05, 0.20),
+    'qE':  (0.0, 20.0),
+    'qTE': (0.0, 200.0),
+}
+
+param_names = list(param_ranges.keys())
+d = len(param_names)
+seed_A, seed_B = 12345, 67890
+out_xlsx = 'sobol_qmc_base2048_samples.xlsx'
+
+# 2) Helper: scale [0,1] -> [min,max]
+def scale_unit_hypercube(U, ranges, names):
+    X = np.empty_like(U, dtype=float)
+    for j, name in enumerate(names):
+        lo, hi = ranges[name]
+        X[:, j] = lo + U[:, j] * (hi - lo)
+    return X
+
+# 3) Generate Sobol-QMC matrices A and B
+engine_A = qmc.Sobol(d=d, scramble=True, seed=seed_A)
+engine_B = qmc.Sobol(d=d, scramble=True, seed=seed_B)
+
+U_A = engine_A.random_base2(m=m)
+U_B = engine_B.random_base2(m=m)
+
+A = scale_unit_hypercube(U_A, param_ranges, param_names)
+B = scale_unit_hypercube(U_B, param_ranges, param_names)
+
+# 4) Save to Excel
+A_df = pd.DataFrame(A, columns=param_names)
+A_df.insert(0, 'matrix', 'A')
+A_df.insert(1, 'sample_id', np.arange(1, n + 1))
+
+B_df = pd.DataFrame(B, columns=param_names)
+B_df.insert(0, 'matrix', 'B')
+B_df.insert(1, 'sample_id', np.arange(1, n + 1))
+
+AB_df = pd.concat([A_df, B_df], ignore_index=True)
+
+with pd.ExcelWriter(out_xlsx, engine='openpyxl') as writer:
+    A_df.to_excel(writer, index=False, sheet_name='A')
+    B_df.to_excel(writer, index=False, sheet_name='B')
+    AB_df.to_excel(writer, index=False, sheet_name='A_and_B')
+
+# --- stop metrics ---
+running = False
+thread.join(timeout=1)
+
+t1 = time.perf_counter()
+cpu1 = proc.cpu_times()
+rss1_b = rss_bytes()
+
+# OS-reported peak RSS
+ru_peak_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+ru_peak_b = ru_peak_kb * 1024 
+
+print("\n===== Colab Resource Report (GB/TB + GiB/TiB) =====")
+print(f"Wall time:       {t1 - t0:.6f} s")
+print(f"CPU user time:   {cpu1.user - cpu0.user:.6f} s")
+print(f"CPU system time: {cpu1.system - cpu0.system:.6f} s")
+
+print("\n--- RAM (RSS) snapshots ---")
+print("RSS at start: ", 
+      f"{bytes_to_GB(rss0_b):.3f} GB ({bytes_to_TB(rss0_b):.6f} TB)  |  "
+      f"{bytes_to_GiB(rss0_b):.3f} GiB ({bytes_to_TiB(rss0_b):.6f} TiB)")
+print("RSS at end:   ", 
+      f"{bytes_to_GB(rss1_b):.3f} GB ({bytes_to_TB(rss1_b):.6f} TB)  |  "
+      f"{bytes_to_GiB(rss1_b):.3f} GiB ({bytes_to_TiB(rss1_b):.6f} TiB)")
+
+print("\n--- Peak RAM (two methods) ---")
+print("Peak RSS (sampler):", 
+      f"{bytes_to_GB(peak_rss_b):.3f} GB ({bytes_to_TB(peak_rss_b):.6f} TB)  |  "
+      f"{bytes_to_GiB(peak_rss_b):.3f} GiB ({bytes_to_TiB(peak_rss_b):.6f} TiB)")
+print("Peak RSS (ru_maxrss):", 
+      f"{bytes_to_GB(ru_peak_b):.3f} GB ({bytes_to_TB(ru_peak_b):.6f} TB)  |  "
+      f"{bytes_to_GiB(ru_peak_b):.3f} GiB ({bytes_to_TiB(ru_peak_b):.6f} TiB)")
+
+print("\nNotes:")
+print(" • 'Peak RSS (sampler)' is measured by polling during execution.")
+print(" • 'Peak RSS (ru_maxrss)' is OS accounting; on Colab/Linux it is typically KB -> bytes.")
