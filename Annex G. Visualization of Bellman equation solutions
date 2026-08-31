@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Automatic Visualization Script (Professional)
+
+INPUT
+-----
+- bellman_outputs_base1024.xlsx (produced by Script 2)
+
+WHAT THIS SCRIPT DOES
+---------------------
+1) Reads the Bellman output sheet you specify (default: 'A').
+2) Reconstructs readiness trajectories x1..x6 from saved u1..u5 and parameters a,b.
+3) Saves AND Displays:
+   (a) ONE figure with ALL 1024 trajectories overlaid.
+   (b) For each metric in {x6, V1_bnEUR, u_total_bnEUR, a, b, qE, qTE}:
+       - three separate case figures: BEST, MEAN-LIKE, WORST.
+       Each case figure contains:
+         - readiness trajectory x1..x6
+         - annual budgets u1..u5
+         - a small text box with parameters and key outputs
+4) Optionally exports all figures into a PowerPoint deck.
+
+WHY THIS HELPS YOUR RESEARCH PAPER
+----------------------------------
+- It turns “numbers in Excel” into interpretable behavior patterns.
+- It visually demonstrates what the policy does (u1..u5) and what outcome it produces (x6).
+- It supports an evidence-based narrative: which parameters create best/worst outcomes.
+
+USAGE (Google Colab)
+--------------------
+- Upload the input file (bellman_outputs_base1024.xlsx) manually using the 'Upload file' button.
+- Run this script directly within a cell after setting the `xlsx_file` and `sheet_to_use` variables in the `if __name__ == '__m ain__':` block.
+- Plots will be displayed inline.
+
+  OPTIONAL (to also export PPTX):
+  Set `export_pptx = True` in the `if __name__ == '__m ain__':` block.
+
+"""
+
+import argparse
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+def sat01(z: float) -> float:
+    """Clamp to [0,1]. This is the saturation used in the model."""
+    return 0.0 if z < 0.0 else 1.0 if z > 1.0 else z
+
+
+def reconstruct_path(row, x0: float, T: int = 5):
+    """Reconstruct readiness path x0..x5 from row parameters and annual budgets.
+
+    The model is:
+        x_{k+1} = sat((1-b)*x_k + a*u_k)
+
+    where a,b come from the row and u_k are the optimal annual budgets.
+
+    Returns
+    -------
+    x_path : np.ndarray, shape (T+1,) = 6
+    u_path : np.ndarray, shape (T,)   = 5
+    """
+    a = float(row['a'])
+    b = float(row['b'])
+    Acoef = 1.0 - b
+
+    # Read annual budgets (bn EUR) from row
+    u_path = np.array([float(row[f'u{k}_bnEUR']) for k in range(1, T+1)], dtype=float)
+
+    # Simulate forward
+    x_path = [float(x0)]
+    for uk in u_path:
+        x_next = sat01(Acoef * x_path[-1] + a * uk)
+        x_path.append(x_next)
+
+    return np.array(x_path, dtype=float), u_path
+
+
+def pick_cases(df: pd.DataFrame, metric: str):
+    """Return indices for BEST, MEAN-LIKE, WORST cases for a given metric.
+
+    For 'V1_bnEUR' we interpret 'BEST' as MIN (lower cost is better).
+    For all other metrics BEST=MAX and WORST=MIN.
+    """
+    s = df[metric].astype(float)
+
+    if metric == 'V1_bnEUR':
+        idx_best = s.idxmin()
+        idx_worst = s.idxmax()
+    elif metric == 'u_total_bnEUR': # Added specific logic for u_total_bnEUR
+        idx_best = (s - s.mean()).abs().idxmin() # Best spending is mean-like spending
+        idx_worst = s.idxmax() # Worst spending is maximum spending (to show impact)
+    else:
+        idx_best = s.idxmax()
+        idx_worst = s.idxmin()
+
+    mean_val = s.mean()
+    idx_mean = (s - mean_val).abs().idxmin()
+
+    return idx_best, idx_mean, idx_worst
+
+
+def plot_case(df: pd.DataFrame, idx: int, x0: float, metric: str, label: str, outdir: str, T: int = 5):
+    """Save one figure for a selected case: readiness + budgets + text summary."""
+    row = df.loc[idx]
+    x_path, u_path = reconstruct_path(row, x0=x0, T=T)
+
+    # Determine display metric name
+    display_metric = 'x5' if metric == 'x6' else metric
+
+    # Create figure with extra space for the bottom text box
+    fig = plt.figure(figsize=(11, 8)) # Decreased figure height to 9.5
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax2 = fig.add_subplot(1, 2, 2)
+
+    # Readiness trajectory (Corrected x-axis range 0 to 5)
+    ax1.plot(range(0, T+1), x_path, marker='o', linewidth=2, color='royalblue')
+    ax1.set_title(f'{label} case for: {display_metric}\nReadiness Trajectory (x0..x5)') # Use display_metric
+    ax1.set_xlabel('Year index (t)')
+    ax1.set_ylabel('Readiness x')
+    ax1.set_ylim(0, 1.05)
+    ax1.axhline(y=1.0, color='red', linestyle='--', alpha=0.2) # Threshold line
+    ax1.grid(True, alpha=0.3)
+
+    # Budget bars (u1 is the spend for the first period)
+    bars = ax2.bar(range(1, T+1), u_path, color='seagreen', alpha=0.7)
+    ax2.set_title(f'{label} case — annual budgets u1..u5')
+    ax2.set_xlabel('Year')
+    ax2.set_ylabel('bn EUR')
+    ax2.grid(True, axis='y', alpha=0.3)
+
+    # Add budget labels on top of bars
+    for bar in bars:
+        yval = bar.get_height()
+        ax2.text(bar.get_x() + bar.get_width()/2, yval + 0.05, round(yval, 2), ha='center', va='bottom', fontsize=8)
+    ax2.set_ylim(top=ax2.get_ylim()[1] * 1.15) # Adjust y-lim to make space for labels
+
+    # Text box with parameters and outputs (Dynamic and precise)
+    text = (
+        f"DATA SUMMARY (Index: {idx})\n"
+        f"--------------------------\n"
+        f"Params: a={row['a']:.5f}, b={row['b']:.5f}\n"
+        f"Weights: qE={row['qE']:.2f}, qTE={row['qTE']:.2f}\n"
+        f"Result: x6={row['x6']:.5f}\n"
+        f"Value: V1_bnEUR={row['V1_bnEUR']:.4f}\n"
+        f"Spend: u_total_bnEUR={row['u_total_bnEUR']:.2f}"
+    )
+    # Box positioning at the bottom center
+    fig.text(0.5, 0.05, text, fontsize=9, family='monospace',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.2), ha='center')
+
+    plt.tight_layout(rect=[0, 0.15, 1, 0.95]) # Maintained bottom margin at 0.30
+
+    fname = os.path.join(outdir, f'{metric}_{label}_idx{idx}.png')
+    plt.savefig(fname, dpi=200)
+    plt.show()
+
+    return fname
+
+def plot_all_trajectories(df: pd.DataFrame, x0: float, outdir: str, T: int = 5, alpha: float = 0.03):
+    """Plot ALL 2048 trajectories on one figure and save it.
+
+    IMPROVEMENT: High alpha transparency (0.03) highlights the 'most common'
+    paths (the darker areas) versus outlier paths.
+    """
+    plt.figure(figsize=(10, 6))
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        x_path, _ = reconstruct_path(row, x0=x0, T=T)
+        plt.plot(range(0, T+1), x_path, color='steelblue', alpha=alpha)
+
+    plt.title(f'Global Behavior: All {len(df)} Readiness Trajectories')
+    plt.xlabel('Year index (0..5)')
+    plt.ylabel('Readiness x')
+    plt.ylim(0, 1.05)
+    plt.grid(True, alpha=0.2)
+
+    fname = os.path.join(outdir, 'ALL_trajectories.png')
+    plt.tight_layout()
+    plt.savefig(fname, dpi=200)
+    plt.show()
+
+    return fname
+
+def export_pptx(image_files, out_pptx='bellman_plots.pptx'):
+    """Export images to a PowerPoint (one image per slide)."""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    for img in image_files:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+        left = Inches(0.5)
+        top = Inches(0.5)
+        width = Inches(9.0)
+        slide.shapes.add_picture(img, left, top, width=width)
+
+    prs.save(out_pptx)
+    return out_pptx
+
+def main(xlsx_path: str, sheet_name: str = 'A', x0: float = 0.6, pptx: bool = False):
+    outdir = 'plots_output'
+    os.makedirs(outdir, exist_ok=True)
+
+    # Load data
+    df = pd.read_excel(xlsx_path, sheet_name=sheet_name, engine='openpyxl')
+
+    # Column validation
+    required = {'a','b','qE','qTE','x6','V1_bnEUR','u_total_bnEUR'}
+    for k in range(1, 6):
+        required.add(f'u{k}_bnEUR')
+
+    missing = sorted(list(required - set(df.columns)))
+    if missing:
+        raise ValueError(f'Missing columns in sheet {sheet_name}: {missing}')
+
+    images = []
+
+    # 1) Plot all trajectories (Global Perspective)
+    print("Generating Global Trajectory Plot...")
+    images.append(plot_all_trajectories(df, x0=x0, outdir=outdir))
+
+    # 2) Loop through metrics and pick representative cases
+    metrics = ['x6', 'V1_bnEUR', 'u_total_bnEUR', 'a', 'b', 'qE', 'qTE']
+
+    print("Generating individual case plots...")
+    for metric in metrics:
+        idx_best, idx_mean, idx_worst = pick_cases(df, metric)
+        # BEST
+        images.append(plot_case(df, idx_best, x0, metric, 'BEST', outdir))
+        # MEAN-LIKE
+        images.append(plot_case(df, idx_mean, x0, metric, 'MEAN', outdir))
+        # WORST
+        images.append(plot_case(df, idx_worst, x0, metric, 'WORST', outdir))
+    print(f"Success! {len(images)} images saved to folder: {outdir}")
+
+    if pptx:
+        try:
+            pptx_path = export_pptx(images, out_pptx='bellman_plots.pptx')
+            print('Saved PPTX:', pptx_path)
+        except Exception as e:
+            print('PPTX export failed. Install python-pptx and try again:', e)
+if __name__ == '__main__':
+    # Settings for Colab/Local execution
+    xlsx_file = 'bellman_outputs_base2048.xlsx'
+    sheet_to_use = 'A'
+    initial_x0 = 0.6
+    export_pptx = False # Set to True if python-pptx is installed
+
+    print(f"Running Professional Visualization for {xlsx_file}")
+    main(xlsx_file, sheet_to_use, initial_x0, export_pptx)
