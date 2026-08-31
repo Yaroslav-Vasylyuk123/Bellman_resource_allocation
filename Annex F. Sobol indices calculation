@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+INPUT:
+- Excel file produced by Script 2: bellman_outputs_base2048.xlsx
+  Must contain sheets: A, B, AB_a, AB_b, AB_qE, AB_qTE.
+
+OUTPUT:
+- Excel file (e.g., sobol_indices_multi_2048.xlsx) with one sheet per output group:
+    - x5_terminal_readiness
+    - V1_value_function
+    - u_total
+    - u_by_year (auto-detected u1..uT)
+  Each sheet contains S1 and ST for each parameter, for each metric.
+
+ESTIMATORS (Jansen):
+- Total-order:
+    ST_i = E[(f(A) - f(AB_i))^2] / (2 Var(f(A)))
+- First-order:
+    S1_i = 1 - E[(f(B) - f(AB_i))^2] / (2 Var(f(A)))
+"""
+
+import re
+import numpy as np
+import pandas as pd
+
+# =========================
+# 1) User settings
+# =========================
+IN_XLSX  = "bellman_outputs_base2048.xlsx"
+OUT_XLSX = "sobol_indices_multi_2048.xlsx"
+
+# Must match AB sheet suffixes in your XLSX:
+params = ["a", "b", "qE", "qTE"]
+
+# Fixed outputs (must exist in A/B/AB_* sheets)
+FIXED_OUTPUTS = {
+    "x5_terminal_readiness": ["x5"],
+    "V1_value_function": ["V1_bnEUR"],
+    "u_total": ["u_total_bnEUR"],
+}
+
+# =========================
+# 2) Helper: compute S1 and ST for one scalar output
+# =========================
+def sobol_jansen_scalar(fA: np.ndarray, fB: np.ndarray, fAB_by_param: dict) -> pd.DataFrame:
+    """Compute Jansen first-order (S1) and total-order (ST) Sobol indices for a scalar output."""
+    fA = np.asarray(fA, dtype=float).ravel()
+    fB = np.asarray(fB, dtype=float).ravel()
+
+    V = np.var(fA, ddof=1)
+    if V == 0.0:
+        raise ValueError("Variance of output is zero; Sobol indices are undefined for this output.")
+
+    S1, ST = {}, {}
+    for p, fAB in fAB_by_param.items():
+        fAB = np.asarray(fAB, dtype=float).ravel()
+        ST[p] = float(np.mean((fA - fAB) ** 2) / (2.0 * V))
+        S1[p] = float(1.0 - np.mean((fB - fAB) ** 2) / (2.0 * V))
+
+    out = pd.DataFrame({
+        "param": list(fAB_by_param.keys()),
+        "S1_first_order": [S1[p] for p in fAB_by_param.keys()],
+        "ST_total_order": [ST[p] for p in fAB_by_param.keys()],
+    }).sort_values("S1_first_order", ascending=False)
+
+    return out
+
+# =========================
+# 3) Load sheets once
+# =========================
+A = pd.read_excel(IN_XLSX, sheet_name="A", engine="openpyxl")
+B = pd.read_excel(IN_XLSX, sheet_name="B", engine="openpyxl")
+
+# Load all AB sheets once (efficiency)
+AB_sheets = {}
+for p in params:
+    AB_sheets[p] = pd.read_excel(IN_XLSX, sheet_name=f"AB_{p}", engine="openpyxl")
+
+# =========================
+# 4) Auto-detect u1_bnEUR..uT_bnEUR from the sheet A
+# =========================
+# This regex matches: u<integer>_bnEUR, e.g., u1_bnEUR, u5_bnEUR, u12_bnEUR
+u_pattern = re.compile(r"^u(\d+)_bnEUR$")
+
+u_cols = []
+for c in A.columns:
+    m = u_pattern.match(str(c))
+    if m:
+        u_cols.append(c)
+
+# Sort by the numeric year index
+u_cols = sorted(u_cols, key=lambda s: int(u_pattern.match(str(s)).group(1)))
+
+if not u_cols:
+    raise KeyError(
+        "No policy-by-year columns found matching pattern u<year>_bnEUR "
+        "(e.g., u1_bnEUR..u5_bnEUR). Check your Script 2 outputs."
+    )
+
+# =========================
+# 5) Build output_groups (fixed + auto-detected u_by_year)
+# =========================
+output_groups = dict(FIXED_OUTPUTS)  # copy
+output_groups["u_by_year"] = u_cols   # now includes u1..u5 automatically (or u1..u10, etc.)
+
+# =========================
+# 6) Compute indices for each output group
+# =========================
+results = {}  # {sheet_name: DataFrame}
+
+for group_name, cols in output_groups.items():
+    # Validate columns exist in A and B
+    missing_ab = [c for c in cols if c not in A.columns or c not in B.columns]
+    if missing_ab:
+        raise KeyError(f"Missing output columns in A/B for group '{group_name}': {missing_ab}")
+
+    # Validate columns exist in all AB sheets
+    for p in params:
+        missing_in_abp = [c for c in cols if c not in AB_sheets[p].columns]
+        if missing_in_abp:
+            raise KeyError(f"Missing output columns in AB_{p} for group '{group_name}': {missing_in_abp}")
+
+    group_frames = []
+    for col in cols:
+        fA = A[col].to_numpy(dtype=float)
+        fB = B[col].to_numpy(dtype=float)
+        fAB_by_param = {p: AB_sheets[p][col].to_numpy(dtype=float) for p in params}
+
+        df_idx = sobol_jansen_scalar(fA, fB, fAB_by_param)
+        df_idx.insert(0, "metric", col)  # label which output this row corresponds to
+        group_frames.append(df_idx)
+
+    results[group_name] = pd.concat(group_frames, ignore_index=True)
+
+# =========================
+# 7) Save to Excel (one sheet per output group)
+# =========================
+with pd.ExcelWriter(OUT_XLSX, engine="openpyxl") as writer:
+    # Settings sheet for traceability
+    pd.DataFrame({
+        "item": ["input_file", "params", "detected_u_cols", "outputs"],
+        "value": [
+            IN_XLSX,
+            ", ".join(params),
+            ", ".join(u_cols),
+            str(output_groups)
+        ]
+    }).to_excel(writer, index=False, sheet_name="settings")
+
+    # Write each group to its own sheet (Excel sheet name limit is 31 chars)
+    for sheet, df in results.items():
+        df.to_excel(writer, index=False, sheet_name=sheet[:31])
+
+print("Saved:", OUT_XLSX)
+
+# Print summaries (optional): show first 25 lines of each group
+for k, v in results.items():
+    print("\n===", k, "===")
+    print(v.head(25))
+    if k == "u_by_year":
+        # Helpful: show which u-years were detected
+        years = [int(u_pattern.match(m).group(1)) for m in u_cols]
+        print(f"[Detected u_by_year years]: {years}")
