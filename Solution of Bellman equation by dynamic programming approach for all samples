@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ANNEX: Computational Implementation & Resource Audit Script
+Model: Bellman Dynamic Programming for Readiness Optimization
+Sampling: Scrambled Sobol-QMC (n=2048)
+
+DESCRIPTION:
+This script performs a high-dimensional sweep of the Bellman DP model.
+1) Loads Sobol-QMC base matrices (A and B) with n=2048 each.
+2) Constructs 4 hybrid matrices (AB_a, AB_b, AB_qE, AB_qTE) for 
+   variance-based Sobol Sensitivity Analysis.
+3) Solves 12,288 independent optimization problems using parallel 
+   processing (CPU-bound).
+4) Monitors and reports real-time hardware resource consumption (RAM/CPU).
+"""
+
+!pip -q install psutil
+
+import os, time, threading
+import psutil
+import resource
+import numpy as np
+import pandas as pd
+from joblib import Parallel, delayed
+import multiprocessing
+
+# ---- Resource Monitoring Suite ----
+def bytes_to_GB(b):   return b / 1e9
+def bytes_to_TB(b):   return b / 1e12
+def bytes_to_GiB(b):  return b / (1024**3)
+def bytes_to_TiB(b):  return b / (1024**4)
+
+proc = psutil.Process(os.getpid())
+def rss_bytes(): return proc.memory_info().rss
+
+# Start Telemetry
+t0 = time.perf_counter()
+cpu0 = proc.cpu_times()
+rss0_b = rss_bytes()
+peak_rss_b = rss0_b
+running = True
+
+def monitor_peak():
+    global peak_rss_b
+    while running:
+        b = rss_bytes()
+        if b > peak_rss_b: peak_rss_b = b
+        time.sleep(0.05)
+
+thread = threading.Thread(target=monitor_peak, daemon=True)
+thread.start()
+
+print(f"[START] RSS Snapshot: {bytes_to_GB(rss0_b):.3f} GB / {bytes_to_GiB(rss0_b):.3f} GiB")
+
+# =================================================================
+# 1) CONFIGURATION & GRID DISCRETIZATION
+# =================================================================
+IN_XLSX  = 'sobol_qmc_base2048_samples.xlsx'
+OUT_XLSX = 'bellman_outputs_base2048.xlsx'
+
+T = 5               # Planning horizon (years)
+x0 = 0.6            # Initial Readiness
+x_target = 0.8      # Policy Target
+U_bar = 1.0         # Annual Budget Cap (bn EUR)
+B_total = 5.0       # Total Budget Cap (bn EUR)
+EUR_PER_BN = 1e9
+
+# DP Grid Density
+NX = 41             # Readiness states
+NS = 41             # Budget states
+NU = 31             # Action space
+
+N_JOBS = max(1, multiprocessing.cpu_count() - 1)
+
+# =================================================================
+# 2) BELLMAN SOLVER CORE
+# =================================================================
+def bellman_solve_one(theta, nx=NX, ns=NS, nu=NU):
+    a, b, qE, qTE = theta
+    Acoef = 1.0 - b
+
+    # State/Action Space Grids
+    xg = np.linspace(0.0, 1.0, nx)
+    sg = np.linspace(0.0, B_total, ns)
+    ug = np.linspace(0.0, U_bar, nu)
+    dx, ds = xg[1]-xg[0], sg[1]-sg[0]
+
+    def ix(x):  return int(np.clip(round(x/dx), 0, nx-1))
+    def is_(s): return int(np.clip(round(s/ds), 0, ns-1))
+    def sat01(z): return min(1.0, max(0.0, z))
+
+    # Terminal Value Function
+    V_next = (qTE * (xg - x_target)**2)[:, None] * np.ones((1, ns))
+    gap_cost_x = qE * (x_target - xg)**2
+    policies = []
+
+    # Backward Induction
+    for _k in range(T, 0, -1):
+        V = np.empty((nx, ns))
+        Ustar = np.zeros((nx, ns))
+        for iX, x in enumerate(xg):
+            x_next_all = np.array([sat01(Acoef*x + a*u) for u in ug])
+            iXn = np.clip(np.round(x_next_all/dx).astype(int), 0, nx-1)
+            for iS, s in enumerate(sg):
+                umax = min(U_bar, s)
+                jmax = int(np.searchsorted(ug, umax, side='right'))
+                if jmax == 0:
+                    V[iX, iS] = gap_cost_x[iX] + V_next[iXn[0], iS]
+                    continue
+                us = ug[:jmax]
+                iSn = np.clip(np.round((s - us)/ds).astype(int), 0, ns-1)
+                vals = (gap_cost_x[iX] + us) + V_next[iXn[:jmax], iSn]
+                jbest = np.argmin(vals)
+                V[iX, iS], Ustar[iX, iS] = vals[jbest], us[jbest]
+        policies.append(Ustar)
+        V_next = V
+
+    # Forward Path Simulation
+    policies = policies[::-1]
+    x, s, u_path = x0, B_total, []
+    for k in range(T):
+        u = min(float(policies[k][ix(x), is_(s)]), U_bar, s)
+        u_path.append(u)
+        x, s = sat01(Acoef*x + a*u), s - u
+
+    return {'x5': x, 'V1_bnEUR': V_next[ix(x0), is_(B_total)], 'u_path': np.array(u_path)}
+
+# =================================================================
+# 3) DATA PROCESSING & EXECUTION
+# =================================================================
+A_df = pd.read_excel(IN_XLSX, sheet_name='A')
+B_df = pd.read_excel(IN_XLSX, sheet_name='B')
+cols = ['a', 'b', 'qE', 'qTE']
+A_mat, B_mat = A_df[cols].to_numpy(), B_df[cols].to_numpy()
+
+design = {'A': A_mat, 'B': B_mat}
+for j, name in enumerate(cols):
+    AB = A_mat.copy()
+    AB[:, j] = B_mat[:, j]
+    design[f'AB_{name}'] = AB
+
+def solve_matrix(name, mat):
+    print(f"Processing Matrix: {name}...")
+    res = Parallel(n_jobs=N_JOBS)(delayed(bellman_solve_one)(tuple(row)) for row in mat)
+    out = pd.DataFrame(mat, columns=cols)
+    out['x5'] = [r['x5'] for r in res]
+    out['V1_bnEUR'] = [r['V1_bnEUR'] for r in res]
+    u_vals = np.vstack([r['u_path'] for r in res])
+    for k in range(T): out[f'u{k+1}_bnEUR'] = u_vals[:, k]
+    out.insert(0, 'matrix', name)
+    return out
+
+solved = {n: solve_matrix(n, m) for n, m in design.items()}
+
+# Save Results
+with pd.ExcelWriter(OUT_XLSX) as writer:
+    for name, df in solved.items(): df.to_excel(writer, index=False, sheet_name=name)
+
+# =================================================================
+# 4) FINAL AUDIT REPORT
+# =================================================================
+running = False
+thread.join()
+t1, cpu1 = time.perf_counter(), proc.cpu_times()
+ru_peak_b = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+
+print("\n===== Colab Resource Report (Final Audit) =====")
+print(f"Wall time:       {t1 - t0:.4f} s")
+print(f"CPU (User/Sys):  {cpu1.user - cpu0.user:.2f}s / {cpu1.system - cpu0.system:.2f}s")
+print(f"Peak RAM (RSS):  {bytes_to_GB(ru_peak_b):.3f} GB ({bytes_to_GiB(ru_peak_b):.3f} GiB)")
