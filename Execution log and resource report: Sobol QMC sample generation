@@ -1,0 +1,16 @@
+[START] RSS: 0.260 GB / 0.242 GiB
+Saved: sobol_qmc_base2048_samples.xlsx
+Sheets: A (2048), B (2048), A_and_B (4096)
+===== Colab Resource Report (GB/TB + GiB/TiB) =====
+Wall time:       0.828537 s
+CPU user time:   0.810000 s
+CPU system time: 0.010000 s
+--- RAM (RSS) snapshots ---
+RSS at start:  0.260 GB (0.000260 TB)  |  0.242 GiB (0.000236 TiB)
+RSS at end:    0.274 GB (0.000274 TB)  |  0.255 GiB (0.000249 TiB)
+--- Peak RAM (two methods) ---
+Peak RSS (sampler): 0.273 GB (0.000273 TB)  |  0.255 GiB (0.000249 TiB)
+Peak RSS (ru_maxrss): 0.273 GB (0.000273 TB)  |  0.254 GiB (0.000248 TiB)
+Notes:
+ • 'Peak RSS (sampler)' is measured by polling during execution.
+ • 'Peak RSS (ru_maxrss)' is OS accounting; on Colab/Linux it is typically KB -> bytes.
